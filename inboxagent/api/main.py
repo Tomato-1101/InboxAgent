@@ -13,19 +13,40 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
+from ..config import get_settings
 from ..db import init_db
+from .routes import router
 
 _PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
 _DIST_DIR = _PROJECT_DIR / "frontend" / "dist"
+
+_scheduler = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    yield
+    settings = get_settings()
+    global _scheduler
+    if settings.poll_enabled:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from ..service import poll_tick
+
+        _scheduler = BackgroundScheduler(daemon=True)
+        # 取り込みは無料・AI分析は auto_analyze_enabled(既定OFF)のときだけ走る。
+        _scheduler.add_job(poll_tick, "interval",
+                           seconds=settings.poll_interval_seconds,
+                           id="poll", max_instances=1, coalesce=True)
+        _scheduler.start()
+    try:
+        yield
+    finally:
+        if _scheduler:
+            _scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="InboxAgent", version=__version__, lifespan=lifespan)
+app.include_router(router)
 
 
 @app.get("/health")

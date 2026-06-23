@@ -107,3 +107,13 @@ class IngestCursor(SQLModel, table=True):
     folder: str = Field(index=True, unique=True)
     last_scanned_at: datetime | None = None
     last_size: int = 0           # mbox ファイルサイズ（増分検知の目安）
+
+
+class AppSetting(SQLModel, table=True):
+    """単純な key-value 設定（自動取り込み/自動分析トグル等）。
+
+    auto_analyze_enabled は既定 OFF。新着の自動AI分析（＝トークン消費）は
+    ユーザーが明示的にONにする（過去の「勝手にAPI大量消費」教訓に従う）。
+    """
+    key: str = Field(primary_key=True)
+    value: str = ""

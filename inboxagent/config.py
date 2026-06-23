@@ -57,9 +57,11 @@ class Settings(BaseSettings):
     smtp_pass: str = ""
     smtp_from_name: str = ""
 
-    # --- サーバ ---
+    # --- サーバ / ポーリング ---
     host: str = "127.0.0.1"
     port: int = 8020
+    poll_enabled: bool = True       # 新着取り込みの定期実行（取り込みは無料・AI分析はトグル制）
+    poll_interval_seconds: int = 120
 
 
 _settings: Settings | None = None
