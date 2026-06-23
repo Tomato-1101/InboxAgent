@@ -1,0 +1,26 @@
+# secrets — 絶対にコミットしない
+.env
+.env.*
+*.pem
+*.key
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# db / data
+*.db
+*.db-wal
+*.db-shm
+
+# node / frontend build
+node_modules/
+frontend/dist/
+
+# os
+.DS_Store
+
+# experiments の生データ（メール本文を含むため）
+experiments/data/
+fixtures/private/

@@ -1,0 +1,8 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sqlmodel>=0.0.22
+pydantic-settings>=2.4
+python-dotenv>=1.0
+APScheduler>=3.10
+python-dateutil>=2.9
+html2text>=2024.2.26
