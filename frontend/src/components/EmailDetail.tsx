@@ -22,6 +22,13 @@ function reSubject(subject: string): string {
   return `Re: ${subject}`
 }
 
+// メールは未信頼の外部コンテンツ。HTML を生描画せず、DOMParser でテキストだけ
+// 取り出して表示する（script/onerror 等は実行されない＝XSS を構造的に防ぐ）。
+function htmlToText(html: string): string {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  return (doc.body?.textContent || '').replace(/\n{3,}/g, '\n\n').trim()
+}
+
 interface Props {
   emailId: string | null
   onToast: (msg: string, kind?: 'success' | 'error' | 'info') => void
@@ -244,11 +251,8 @@ export function EmailDetail({ emailId, onToast, onEmailSelect }: Props) {
           )}
           {!bodyContent && detail.body_html && (
             <div className="detail-section">
-              <div className="detail-section-title">本文（HTML）</div>
-              <div
-                className="body-text"
-                dangerouslySetInnerHTML={{ __html: detail.body_html }}
-              />
+              <div className="detail-section-title">本文（HTMLをテキスト表示）</div>
+              <div className="body-text">{htmlToText(detail.body_html)}</div>
             </div>
           )}
         </div>
