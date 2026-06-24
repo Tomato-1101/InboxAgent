@@ -24,3 +24,6 @@ frontend/dist/
 # experiments の生データ（メール本文を含むため）
 experiments/data/
 fixtures/private/
+
+# 生成されるサンプル mbox（make_fixture が再生成）
+fixtures/*.mbox

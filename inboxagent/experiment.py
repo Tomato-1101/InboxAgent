@@ -28,10 +28,21 @@ _IMPORTANT = {"緊急", "要対応"}
 
 
 def _run(label: str, model: str, emails: list[Email], groups: list[Group],
-         settings: Settings) -> dict:
+         settings: Settings, batch_size: int = 10) -> dict:
+    """本番と同じく batch_size 件ずつ分割して分析し、結果・トークン・時間を集計する。
+
+    150〜300 通を 1 コールに載せるとプロンプトが巨大化して失敗するため、
+    production の analyze_pending(_BATCH=10) と同じ粒度でチャンクする。
+    """
     t0 = time.time()
-    results, in_tok, out_tok = analyze_emails(
-        emails, settings=settings, model=model, groups=groups)
+    results: list[dict] = []
+    in_tok = out_tok = 0
+    for i in range(0, len(emails), batch_size):
+        chunk = emails[i:i + batch_size]
+        r, it, ot = analyze_emails(chunk, settings=settings, model=model, groups=groups)
+        results.extend(r)
+        in_tok += it
+        out_tok += ot
     return {
         "label": label, "model": model, "results": results,
         "in_tokens": in_tok, "out_tokens": out_tok, "seconds": time.time() - t0,
@@ -75,6 +86,7 @@ def run_experiment(
     ground_truth: str = "opus",
     candidates: tuple[str, ...] = ("sonnet", "haiku"),
     limit: int | None = None,
+    batch_size: int = 10,
     report_path: str | None = None,
     settings: Settings | None = None,
 ) -> dict:
@@ -90,15 +102,15 @@ def run_experiment(
         raise RuntimeError("分析対象のメールが DB にありません。先に取り込みを実行してください。")
 
     runs: dict[str, dict] = {}
-    gt_run = _run(ground_truth, MODELS[ground_truth], emails, groups, settings)
+    gt_run = _run(ground_truth, MODELS[ground_truth], emails, groups, settings, batch_size)
     runs[ground_truth] = gt_run
     for c in candidates:
-        runs[c] = _run(c, MODELS[c], emails, groups, settings)
+        runs[c] = _run(c, MODELS[c], emails, groups, settings, batch_size)
 
     gt = gt_run["results"]
     metrics = {c: _metrics(gt, runs[c]["results"]) for c in candidates}
 
-    report = _build_report(ground_truth, runs, metrics, len(emails))
+    report = _build_report(ground_truth, runs, metrics, len(emails), batch_size)
     out = Path(report_path or (Path(__file__).resolve().parent.parent
                                / "experiments" / "report.md"))
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -108,13 +120,14 @@ def run_experiment(
     }}
 
 
-def _build_report(gt_label: str, runs: dict, metrics: dict, n: int) -> str:
+def _build_report(gt_label: str, runs: dict, metrics: dict, n: int,
+                  batch_size: int = 10) -> str:
     lines = [
         "# InboxAgent AIコスト/品質 実験レポート",
         "",
         f"- 対象メール: {n}通",
         f"- 正解(ground truth): **{gt_label}** ({runs[gt_label]['model']})",
-        "- 全パイプラインは「バッチ（複数通を1コール）」で実行。",
+        f"- 全パイプラインは {batch_size} 通ずつのバッチ（本番 analyze_pending と同粒度）で実行。",
         "",
         "## コスト（トークン・時間）",
         "",
