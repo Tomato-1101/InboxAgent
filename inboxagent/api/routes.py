@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlmodel import select
+from sqlmodel import func, or_, select
 
 from ..config import get_settings
 from ..db import get_session
@@ -37,28 +37,32 @@ def _serialize_list_row(e: Email, a: Analysis | None, group_name: str | None) ->
 def list_emails(group_id: int | None = None, importance: str | None = None,
                 q: str | None = None, needs_reply: bool | None = None,
                 limit: int = 200) -> dict:
+    """一覧。importance はカンマ区切りで複数指定できる（例: 緊急,要対応）。
+
+    フィルタ・件数制限は SQL 側で行う（全件ロードするとメール数に比例して重くなる）。
+    """
     with get_session() as s:
         groups = {g.id: g.name for g in s.exec(select(Group)).all()}
-        rows = s.exec(
-            select(Email, Analysis)
-            .join(Analysis, Analysis.email_id == Email.id, isouter=True)
-            .order_by(Email.date.desc())
-        ).all()
-    items = []
-    for e, a in rows:
-        if group_id is not None and (not a or a.group_id != group_id):
-            continue
-        if importance is not None and (not a or a.importance != importance):
-            continue
-        if needs_reply is not None and (not a or a.needs_reply != needs_reply):
-            continue
+        stmt = select(Email, Analysis).join(
+            Analysis, Analysis.email_id == Email.id, isouter=True)
+        if group_id is not None:
+            stmt = stmt.where(Analysis.group_id == group_id)
+        if importance:
+            levels = [x.strip() for x in importance.split(",") if x.strip()]
+            stmt = stmt.where(Analysis.importance.in_(levels))
+        if needs_reply is not None:
+            stmt = stmt.where(Analysis.needs_reply == needs_reply)
         if q:
-            hay = f"{e.subject} {e.from_name} {e.from_addr} {a.summary if a else ''}".lower()
-            if q.lower() not in hay:
-                continue
-        items.append(_serialize_list_row(e, a, groups.get(a.group_id) if a else None))
-        if len(items) >= limit:
-            break
+            like = f"%{q}%"
+            stmt = stmt.where(or_(
+                Email.subject.like(like),
+                Email.from_name.like(like),
+                Email.from_addr.like(like),
+                Analysis.summary.like(like),
+            ))
+        rows = s.exec(stmt.order_by(Email.date.desc()).limit(limit)).all()
+    items = [_serialize_list_row(e, a, groups.get(a.group_id) if a else None)
+             for e, a in rows]
     return {"items": items, "count": len(items)}
 
 
@@ -71,7 +75,8 @@ def get_email(email_id: int) -> dict:
         a = s.exec(select(Analysis).where(Analysis.email_id == email_id)).first()
         tasks = s.exec(select(Task).where(Task.email_id == email_id)).all()
         drafts = s.exec(select(Draft).where(Draft.email_id == email_id)).all()
-        group_name = s.get(Group, a.group_id).name if (a and a.group_id) else None
+        g = s.get(Group, a.group_id) if (a and a.group_id) else None
+        group_name = g.name if g else None
     return {
         "id": e.id, "from_name": e.from_name, "from_addr": e.from_addr,
         "to_addrs": e.to_addrs, "subject": e.subject,
@@ -137,6 +142,10 @@ def delete_group(group_id: int) -> dict:
         g = s.get(Group, group_id)
         if not g:
             raise HTTPException(404, "グループが見つかりません")
+        # 参照が残ると詳細取得で dangling group_id になるため、同一トランザクションで外す。
+        for a in s.exec(select(Analysis).where(Analysis.group_id == group_id)).all():
+            a.group_id = None
+            s.add(a)
         s.delete(g)
         s.commit()
     return {"ok": True}
@@ -146,12 +155,16 @@ def delete_group(group_id: int) -> dict:
 @router.get("/tasks")
 def list_tasks(done: bool | None = None) -> dict:
     with get_session() as s:
-        tasks = s.exec(select(Task).order_by(Task.due_date)).all()
-        subjects = {e.id: e.subject for e in s.exec(select(Email)).all()}
+        stmt = select(Task).order_by(Task.due_date)
+        if done is not None:
+            stmt = stmt.where(Task.done == done)
+        tasks = s.exec(stmt).all()
+        email_ids = {t.email_id for t in tasks if t.email_id}
+        subjects = dict(s.exec(
+            select(Email.id, Email.subject).where(Email.id.in_(email_ids))
+        ).all()) if email_ids else {}
     items = []
     for t in tasks:
-        if done is not None and t.done != done:
-            continue
         items.append({
             "id": t.id, "kind": t.kind, "title": t.title, "done": t.done,
             "source": t.source, "email_id": t.email_id,
@@ -220,6 +233,11 @@ def reply_send(body: SendIn) -> dict:
                 Task.email_id == body.email_id, Task.kind == "reply_pending")).all():
             t.done = True
             s.add(t)
+        # 候補のまま残すと次回開いたときに送信済みの文面が再投入され誤再送につながる。
+        for d in s.exec(select(Draft).where(
+                Draft.email_id == body.email_id, Draft.status == "候補")).all():
+            d.status = "送信済"
+            s.add(d)
         s.commit()
     return result
 
@@ -275,11 +293,15 @@ def set_auto_analyze(body: ToggleIn) -> dict:
 @router.get("/stats")
 def stats() -> dict:
     with get_session() as s:
-        total = len(s.exec(select(Email)).all())
-        analyzed = len(s.exec(select(Analysis)).all())
-        by_imp: dict[str, int] = {}
-        for a in s.exec(select(Analysis)).all():
-            by_imp[a.importance] = by_imp.get(a.importance, 0) + 1
-        open_tasks = len(s.exec(select(Task).where(Task.done == False)).all())  # noqa: E712
+        total = s.exec(select(func.count()).select_from(Email)).one()
+        analyzed = s.exec(select(func.count()).select_from(Analysis)).one()
+        by_imp: dict[str, int] = {
+            imp: n for imp, n in s.exec(
+                select(Analysis.importance, func.count()).group_by(Analysis.importance)
+            ).all()
+        }
+        open_tasks = s.exec(
+            select(func.count()).select_from(Task).where(Task.done == False)  # noqa: E712
+        ).one()
     return {"total": total, "analyzed": analyzed, "by_importance": by_imp,
             "open_tasks": open_tasks, "settings_model": get_settings().claude_model}

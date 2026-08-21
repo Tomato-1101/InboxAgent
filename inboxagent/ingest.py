@@ -13,6 +13,7 @@ import email
 import email.policy
 import email.utils
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -206,20 +207,31 @@ def ingest_mbox(path: Path, folder_label: str | None = None) -> int:
 
 
 def _split_mbox(raw: bytes) -> list[bytes]:
-    """mbox を 'From ' 区切りで各メッセージに分割。"""
+    """mbox を 'From ' 区切りで各メッセージに分割。
+
+    本文中の 'From ' 行で 1通が割れないよう、区切りは「先頭 or 直前が空行」の
+    'From ' 行に限る（mboxrd 風）。各メッセージの '>From ' スタッフィングは元に戻す。
+    """
     lines = raw.split(b"\n")
     blocks: list[bytes] = []
     current: list[bytes] = []
+    prev_blank = True
     for line in lines:
-        if line.startswith(b"From ") and current:
+        if line.startswith(b"From ") and current and prev_blank:
             blocks.append(b"\n".join(current))
             current = [line]
         else:
             current.append(line)
+        prev_blank = line in (b"", b"\r")
     if current:
         blocks.append(b"\n".join(current))
     # 先頭が 'From ' で始まらない（壊れ/断片）ブロックは捨てる。
-    return [b for b in blocks if b.startswith(b"From ")]
+    return [_unstuff(b) for b in blocks if b.startswith(b"From ")]
+
+
+def _unstuff(block: bytes) -> bytes:
+    """mbox 保存時に付く '>From ' の引用（stuffing）を 'From ' に戻す。"""
+    return re.sub(rb"^>From ", b"From ", block, flags=re.M)
 
 
 def ingest_all(profile_override: str = "") -> dict:
@@ -231,10 +243,15 @@ def ingest_all(profile_override: str = "") -> dict:
     if profile is None:
         return {"ok": False, "error": "Thunderbird プロファイルが見つかりません", "profile": None}
     mboxes = find_mbox_files(profile)
+    with get_session() as s:
+        last_sizes = {c.folder: c.last_size for c in s.exec(select(IngestCursor)).all()}
     total_new = 0
     per_folder: dict[str, int] = {}
     for mb in mboxes:
         rel = str(mb.relative_to(profile))
+        # サイズが前回と同じなら未変更とみなし、フル再パースを避ける。
+        if last_sizes.get(rel) == mb.stat().st_size:
+            continue
         n = ingest_mbox(mb, folder_label=rel)
         if n:
             per_folder[rel] = n

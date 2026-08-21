@@ -49,7 +49,11 @@ export function Header({ stats, onIngestDone, onToast }: Props) {
     setAnalyzing(true)
     try {
       const res = await api.analyzeRun()
-      onToast(`分析完了: ${res.analyzed} 件処理`, 'success')
+      if (res.ok) {
+        onToast(`分析完了: ${res.analyzed} 件処理`, 'success')
+      } else {
+        onToast(res.error ?? '分析を実行できませんでした', 'error')
+      }
       onIngestDone()
     } catch (e: any) {
       onToast(`分析エラー: ${e.message}`, 'error')

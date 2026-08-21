@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta
 
 from sqlmodel import select
@@ -16,6 +17,8 @@ from .db import get_session
 from .models import Analysis, AppSetting, Email, Group
 
 _BATCH = 10  # 1コールあたりのメール数（コスト/レイテンシのバランス）
+# 手動実行とポーリングの二重起動でトークンを二重消費しないための排他（プロセス内）。
+_analyze_lock = threading.Lock()
 
 
 # --- 設定トグル ---
@@ -69,30 +72,38 @@ def count_pending(months: int | None = None) -> dict:
 
 def analyze_pending(months: int | None = None, max_emails: int | None = None,
                     model: str | None = None) -> dict:
-    """未分析メールを小バッチで分析・永続化する。返り値に処理件数。"""
-    settings = get_settings()
-    pend = pending_emails(months)
-    if max_emails:
-        pend = pend[:max_emails]
-    if not pend:
-        return {"ok": True, "analyzed": 0, "batches": 0}
+    """未分析メールを小バッチで分析・永続化する。返り値に処理件数。
 
-    with get_session() as s:
-        groups = s.exec(select(Group).order_by(Group.sort_order)).all()
-    groups_by_name = {g.name: g for g in groups}
-    pipeline = (model or settings.claude_model) + "-batch"
+    実行中の再入（UIの再クリック・ポーリングとの重なり）は同じメールを再課金するため拒否する。
+    """
+    if not _analyze_lock.acquire(blocking=False):
+        return {"ok": False, "analyzed": 0, "batches": 0, "error": "分析が既に実行中です"}
+    try:
+        settings = get_settings()
+        pend = pending_emails(months)
+        if max_emails:
+            pend = pend[:max_emails]
+        if not pend:
+            return {"ok": True, "analyzed": 0, "batches": 0}
 
-    analyzed = batches = 0
-    for i in range(0, len(pend), _BATCH):
-        chunk = pend[i:i + _BATCH]
-        results, _, _ = analyze_emails(
-            chunk, settings=settings, model=model or settings.claude_model, groups=groups)
-        for e, r in zip(chunk, results):
-            if r:
-                persist_analysis(e, r, pipeline=pipeline, groups_by_name=groups_by_name)
-                analyzed += 1
-        batches += 1
-    return {"ok": True, "analyzed": analyzed, "batches": batches}
+        with get_session() as s:
+            groups = s.exec(select(Group).order_by(Group.sort_order)).all()
+        groups_by_name = {g.name: g for g in groups}
+        pipeline = (model or settings.claude_model) + "-batch"
+
+        analyzed = batches = 0
+        for i in range(0, len(pend), _BATCH):
+            chunk = pend[i:i + _BATCH]
+            results, _, _ = analyze_emails(
+                chunk, settings=settings, model=model or settings.claude_model, groups=groups)
+            for e, r in zip(chunk, results):
+                if r:
+                    persist_analysis(e, r, pipeline=pipeline, groups_by_name=groups_by_name)
+                    analyzed += 1
+            batches += 1
+        return {"ok": True, "analyzed": analyzed, "batches": batches}
+    finally:
+        _analyze_lock.release()
 
 
 # --- ポーリング（取り込みは常時・分析はトグル時のみ） ---

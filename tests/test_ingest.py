@@ -18,7 +18,7 @@ if _TMP_DB.exists():
 os.environ["DB_PATH"] = str(_TMP_DB)
 
 from inboxagent.db import init_db, get_session  # noqa: E402
-from inboxagent.ingest import ingest_mbox  # noqa: E402
+from inboxagent.ingest import ingest_mbox, _split_mbox  # noqa: E402
 from inboxagent.models import Email  # noqa: E402
 from sqlmodel import select  # noqa: E402
 import make_fixture  # noqa: E402
@@ -26,7 +26,36 @@ import make_fixture  # noqa: E402
 FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "sample.mbox"
 
 
+def check_split() -> None:
+    """本文中の 'From ' 行で誤分割しない・'>From ' が復元されることの確認。"""
+    raw = (
+        b"From envelope1 Mon Jun 22 10:00:00 2026\n"
+        b"Message-ID: <split-a>\n"
+        b"From: a@example.com\n"
+        b"Subject: split\n"
+        b"\n"
+        b"quoted below:\n"
+        b"From here it is quoted text\n"   # 直前が空行でないので区切りではない
+        b">From stuffed line\n"            # mbox のスタッフィング（復元される）
+        b"\n"
+        b"From envelope2 Mon Jun 22 11:00:00 2026\n"
+        b"Message-ID: <split-b>\n"
+        b"From: b@example.com\n"
+        b"Subject: second\n"
+        b"\n"
+        b"body2\n"
+    )
+    blocks = _split_mbox(raw)
+    assert len(blocks) == 2, f"本文の 'From ' で割れてはいけない: {len(blocks)}ブロック"
+    assert b"From here it is quoted text" in blocks[0], "本文が欠けた"
+    assert b"\nFrom stuffed line" in blocks[0], "'>From ' の unstuffing 失敗"
+    assert b">From stuffed" not in blocks[0], "'>From ' が残っている"
+    assert b"split-b" in blocks[1], "2通目の区切り位置が違う"
+    print("PASS: _split_mbox 本文の'From 'で誤分割しない・'>From 'を復元")
+
+
 def run() -> None:
+    check_split()
     make_fixture.main()
     init_db()
 

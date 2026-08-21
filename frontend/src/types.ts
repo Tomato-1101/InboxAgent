@@ -81,7 +81,7 @@ export interface EmailDetail {
   id: string
   from_name: string
   from_addr: string
-  to_addrs: string[]
+  to_addrs: string // カンマ区切り（API/DB がこの形で保持）
   subject: string
   date: string | null
   body_text: string | null
@@ -149,6 +149,7 @@ export interface AnalyzeRunResponse {
   ok: boolean
   analyzed: number
   batches: number
+  error?: string
 }
 
 // 返信整形

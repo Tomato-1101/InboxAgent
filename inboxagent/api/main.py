@@ -8,8 +8,8 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
@@ -46,6 +46,31 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="InboxAgent", version=__version__, lifespan=lifespan)
+
+
+# ローカル専用 API。無認証なので、他サイトからの CSRF と DNS rebinding を
+# Host/Origin の検証で塞ぐ（Vite dev は localhost:5173 からの Origin なので通る）。
+_LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
+
+
+def _hostname(value: str) -> str:
+    """"host:port" や "http://host:port" からホスト名だけを取り出す。"""
+    v = value.split("://", 1)[-1].split("/", 1)[0]
+    if v.startswith("["):          # IPv6 は [::1]:8020 形式
+        return v[1:].split("]", 1)[0]
+    return v.rsplit(":", 1)[0] if ":" in v else v
+
+
+@app.middleware("http")
+async def local_only_guard(request: Request, call_next):
+    if _hostname(request.headers.get("host", "")) not in _LOCAL_HOSTNAMES:
+        return JSONResponse({"detail": "ローカル以外のホスト名は許可されていません"}, status_code=403)
+    origin = request.headers.get("origin")
+    if origin and _hostname(origin) not in _LOCAL_HOSTNAMES:
+        return JSONResponse({"detail": "許可されていない Origin です"}, status_code=403)
+    return await call_next(request)
+
+
 app.include_router(router)
 
 

@@ -75,9 +75,11 @@ export function EmailDetail({ emailId, onToast, onEmailSelect }: Props) {
         // 返信フォームの初期値設定
         setReplyTo(d.from_addr)
         setReplySubject(reSubject(d.subject))
-        // AI下書きがあれば差し込む
+        // AI下書きがあれば差し込む（送信済みの下書きは再投入しない）
         const suggested =
-          d.drafts?.[0]?.body ?? d.analysis?.suggested_reply ?? ''
+          d.drafts?.find((x) => x.status === '候補')?.body ??
+          d.analysis?.suggested_reply ??
+          ''
         setReplyBody(suggested)
       })
       .catch((e) => setError(e.message))
@@ -111,7 +113,9 @@ export function EmailDetail({ emailId, onToast, onEmailSelect }: Props) {
   if (!detail) return null
 
   const analysis = detail.analysis
-  const hasDraft = !!(detail.drafts?.[0]?.body || analysis?.suggested_reply)
+  const hasDraft = !!(
+    detail.drafts?.find((x) => x.status === '候補')?.body || analysis?.suggested_reply
+  )
 
   const handleFormat = async () => {
     setFormatting(true)
@@ -170,7 +174,7 @@ export function EmailDetail({ emailId, onToast, onEmailSelect }: Props) {
             </div>
             <div className="detail-meta-row">
               <span className="detail-meta-label">宛先</span>
-              <span className="detail-meta-val">{detail.to_addrs.join(', ')}</span>
+              <span className="detail-meta-val">{detail.to_addrs}</span>
             </div>
             {detail.date && (
               <div className="detail-meta-row">

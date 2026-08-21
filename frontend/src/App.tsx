@@ -31,6 +31,8 @@ export default function App() {
   const [importanceFilters, setImportanceFilters] = useState<Set<Importance>>(new Set())
   const [needsReplyOnly, setNeedsReplyOnly] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  // 1文字ごとに API を叩かないよう検索語だけ 300ms 遅らせる
+  const [debouncedQuery, setDebouncedQuery] = useState('')
 
   const loadStats = useCallback(async () => {
     try {
@@ -50,11 +52,12 @@ export default function App() {
     try {
       const params: Parameters<typeof api.emails>[0] = { limit: 200 }
       if (selectedGroupId) params.group_id = selectedGroupId
-      if (importanceFilters.size === 1) {
-        params.importance = [...importanceFilters][0]
+      if (importanceFilters.size > 0) {
+        // 複数選択もサーバ側フィルタ（カンマ区切り）。取得済み200件の絞り込みにしない。
+        params.importance = [...importanceFilters].join(',')
       }
       if (needsReplyOnly) params.needs_reply = true
-      if (searchQuery.trim()) params.q = searchQuery.trim()
+      if (debouncedQuery.trim()) params.q = debouncedQuery.trim()
       const res = await api.emails(params)
       setEmails(res.items)
     } catch (e: any) {
@@ -62,7 +65,13 @@ export default function App() {
     } finally {
       setEmailsLoading(false)
     }
-  }, [selectedGroupId, importanceFilters, needsReplyOnly, searchQuery])
+  }, [selectedGroupId, importanceFilters, needsReplyOnly, debouncedQuery])
+
+  // 検索語のデバウンス
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchQuery), 300)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
 
   // 初回ロード
   useEffect(() => {
@@ -93,14 +102,6 @@ export default function App() {
       return next
     })
   }
-
-  // 重要度フィルタが複数の場合はクライアント側でフィルタ
-  const filteredEmails =
-    importanceFilters.size > 1
-      ? emails.filter(
-          (e) => e.importance && importanceFilters.has(e.importance)
-        )
-      : emails
 
   const handleTaskEmailSelect = (id: string) => {
     setSelectedEmailId(id)
@@ -139,10 +140,10 @@ export default function App() {
             <div className="view-frame">
               <div className="email-list-pane">
                 <div className="email-list-header">
-                  <span>{filteredEmails.length} 件</span>
+                  <span>{emails.length} 件</span>
                 </div>
                 <EmailList
-                  emails={filteredEmails}
+                  emails={emails}
                   selectedId={selectedEmailId}
                   onSelect={setSelectedEmailId}
                   loading={emailsLoading}
